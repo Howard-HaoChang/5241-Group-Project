@@ -1,0 +1,202 @@
+---
+title: "Final Project"
+output: html_document
+date: '2022-05-10'
+---
+
+This section pulls the intital data and separates it into normal and log transformed
+```{r}
+library(tidyverse)
+library(dplyr)
+library(leaps)
+library(zoo)
+
+data <- read_csv("/Users/laurenmctigue/Desktop/Columbia/Machine\ Learning/Project/Project\ Data/hf315-01-ne-towns-panel.csv")
+
+dim(data)
+#rename key columns
+data <- data %>% rename(
+  PercentProtected = co.pre100pct,
+  MedianIncome = mhhi.ia.pre
+)
+
+na_vals <- data[is.na(data$MedianIncome),]
+no_vals <- as.data.frame(na_vals)
+x <- no_vals %>% filter(year == "2015") #only one town where the missing value is 2015, can interpolate
+
+interpolated_data <- data %>% filter(town.id != 507) %>%
+  mutate(`MedianIncome` = na.approx(`MedianIncome`))
+
+interpolated_data$gis.join <- as.factor(interpolated_data$gis.join)
+interpolated_data$year <- as.factor(interpolated_data$year)
+
+#split data into log and normal
+log_data <- interpolated_data %>% dplyr::select(year, gis.join,starts_with("ln."), co.pre100:l5.nn10.co.pre100) 
+
+#rename log columns
+log_data <- log_data %>% rename(
+  Unemployment_rate = ln.unempr.pre,
+  Median_Income = ln.mhhi.ia.pre,
+  Ag_Employment = ln.agricu.pre ,
+  Arts_Employment = ln.arts.pre,
+  Pop = ln.popcen.pre,
+  All_Protected = co.pre100,
+  Private_Protected = co.priv.pre100,
+  Public_Protected = co.pub.pre100,
+  Distance_100 = ln.ctydist100,
+  Distance_30 = ln.ctydist30
+)
+```
+
+Exploring missing values, performs interpolation for variable of interested
+```{r}
+na_vals <- log_data[is.na(log_data$Median_Income),]
+no_vals <- as.data.frame(na_vals)
+x <- no_vals %>% filter(year == "2015") #none
+x1 <- no_vals %>% filter(year == "1990") #none
+dim(x1)
+
+na_vals2 <- log_data[is.na(log_data$Unemployment_rate),]
+no_vals2 <- as.data.frame(na_vals2)
+x2 <- no_vals2 %>% filter(year == "2015") #none
+dim(x2)
+x3 <- no_vals2 %>% filter(year == "1990") #unemployment is missing from log data
+dim(x3)
+
+#Unemployment in original data set
+unemployment_test <- as.data.frame(data[is.na(data$unemp.r.pre),])
+head(unemployment_test)
+x4 <- unemployment_test %>% filter(year == "1990")
+dim(x4)
+#values missing from 1990, cannot use
+
+interpolated_data <- log_data %>% mutate(`Median_Income` = na.approx(`Median_Income`))
+
+interpolated_data$gis.join <- as.factor(interpolated_data$gis.join)
+interpolated_data$year <- as.factor(interpolated_data$year)
+```
+
+
+Going to use 1995 and on since it allows more data points
+Allows more variables and better results
+
+```{r}
+dim(log_data)
+#remove 1990
+log_data_trim1 <- log_data %>% mutate(`Median_Income` = na.approx(`Median_Income`))
+log_data_trim <- log_data_trim1 %>% dplyr::filter(year!=1990)
+sapply(log_data_trim, function(x) sum(is.na(x)))
+
+#remove values that are empty still leaves a good amount of data
+log_data_trim_selected <- log_data_trim %>% dplyr::select(-ln.r.units.pre, -Ag_Employment, -Arts_Employment, -Pop)
+dim(log_data_trim_selected)
+
+#split into test and train data  
+train = sample(1:nrow(log_data_trim_selected), nrow(log_data_trim_selected)/2) #split in half
+data.train=log_data_trim_selected[train,]
+data.test=log_data_trim_selected[-train,]
+dim(data.test)
+dim(data.train) #3750 in each
+
+simple_regression <- lm(Median_Income ~ All_Protected, data = data.train)
+summary(simple_regression)
+
+multi_regression <- lm(Median_Income ~ . - year -gis.join, data = data.train)
+summary(multi_regression)
+
+#only use sig p values
+multi_regression1 <- lm(Median_Income ~ Unemployment_rate + Distance_100 + ln.pop.cen90 +
+                          l5.co.pre100 + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train)
+summary(multi_regression1)
+
+multi_regression2 <- lm(Median_Income ~ Unemployment_rate + Distance_100 + 
+                          l5.co.pre100 + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train)
+summary(multi_regression2)
+
+multi_regression3 <- lm(Median_Income ~ Unemployment_rate + Distance_100 + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train)
+summary(multi_regression3)
+#all protected not included
+
+#best subset
+regfit.full=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=19)
+reg.summary=summary(regfit.full)
+names(reg.summary)
+reg.summary$rsq
+which.max(reg.summary$adjr2)
+plot.new()
+par(mfrow=c(2,2))
+points(10,reg.summary$adjr2[10], col="red",cex=2,pch=20)
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",type='l')
+which.min(reg.summary$cp)
+points(10,reg.summary$cp[10],col="red",cex=2,pch=20)
+which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(9,reg.summary$bic[9],col="red",cex=2,pch=20)
+plot(regfit.full,scale="r2")
+plot(regfit.full,scale="adjr2")
+plot(regfit.full,scale="Cp")
+plot(regfit.full,scale="bic")
+coef(regfit.full,10)
+coef(regfit.full,9)
+
+#forward selection
+regfit.fwd=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=19,method="forward")
+summary(regfit.fwd)
+#distance 100 always included, then private and then public protected
+
+#backward selection
+regfit.bwd=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=19,method="backward")
+summary(regfit.bwd)
+#similar to forward
+
+#important variables and meaning
+#l5.co.pre100 = 5 year lag of log percent protected, all types
+#l5.co.pub.pre100 = 5 year lag of log percent protected, public
+#l5.co.priv.pre100 = 5 year lag of log percent protected, private
+
+#try linear of 5 yr lag
+simple_regression1 <- lm(Median_Income ~ l5.co.pre100, data = data.train)
+summary(simple_regression1)
+
+simple_regression2 <- lm(Median_Income ~ l5.co.pub.pre100 + l5.co.priv.pre100 , data = data.train)
+summary(simple_regression2)
+
+```
+
+
+Test to try year as a cateogrical variable- nothing too signficiant but wanted to see the relationship
+```{r}
+
+#year as categorical
+data.train.categorical <- data.train
+data.train.categorical$year.f <- factor(data.train.categorical$year)
+is.factor(data.train.categorical$year.f)
+
+model.cat1 <- lm(Median_Income ~ year.f, data = data.train.categorical)
+summary(model.cat1)
+#shows a sig p value at 2005 and 1995
+#all slopes positive
+
+model.cat2 <- lm(Median_Income ~ year.f + l5.co.pub.pre100, data = data.train.categorical)
+summary(model.cat2)
+
+model.cat3 <- lm(Median_Income ~ year.f + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train.categorical)
+summary(model.cat3)
+#signs start to flip for the year
+
+```
+
+Year as numerical - nothing too significant
+
+```{r}
+#year as numerical
+model.num1 <- lm(Median_Income ~ year, data = data.train)
+summary(model.num1)
+
+model.num2 <- lm(Median_Income ~ year + l5.co.pub.pre100, data = data.train)
+summary(model.num2)
+model.num3 <- lm(Median_Income ~ year + l5.co.pub.pre100+ l5.co.priv.pre100, data = data.train)
+summary(model.num3)
+
+```
+
