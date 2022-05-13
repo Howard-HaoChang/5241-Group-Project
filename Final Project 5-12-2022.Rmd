@@ -1,0 +1,424 @@
+---
+title: "final project"
+author: "John Podias"
+date: '2022-05-12'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+The first part is Lauren and Gabe's code which manipulates the data and does initial fitting before we decide on removing 1990 and should be explained in Lauren's code:
+
+```{r, echo = FALSE,results='hide',fig.show='hide'}
+#Start of final project
+
+#rm(list=ls())
+library(tidyverse)
+library(dplyr)
+library(leaps)
+library(zoo)
+library(car)
+library(glmnet)
+hf315.01.ne.towns.panel <- read.csv("~/Documents/Columbia/GR 5241 Machine Learning/hf315-01-ne-towns-panel.csv")
+data <- hf315.01.ne.towns.panel
+
+dim(data)
+#rename key columns
+data <- data %>% rename(
+  PercentProtected = co.pre100pct,
+  MedianIncome = mhhi.ia.pre
+)
+
+na_vals <- data[is.na(data$MedianIncome),]
+no_vals <- as.data.frame(na_vals)
+x <- no_vals %>% filter(year == "2015") #only one town where the missing value is 2015, can interpolate
+
+interpolated_data <- data %>% filter(town.id != 507) %>%
+  mutate(`MedianIncome` = na.approx(`MedianIncome`))
+
+interpolated_data$gis.join <- as.factor(interpolated_data$gis.join)
+interpolated_data$year <- as.factor(interpolated_data$year)
+
+#split data into log and normal
+log_data <- interpolated_data %>% dplyr::select(year, gis.join,starts_with("ln."), co.pre100:l5.nn10.co.pre100) 
+
+#rename log columns
+log_data <- log_data %>% rename(
+  Unemployment_rate = ln.unempr.pre,
+  Median_Income = ln.mhhi.ia.pre,
+  Ag_Employment = ln.agricu.pre ,
+  Arts_Employment = ln.arts.pre,
+  Pop = ln.popcen.pre,
+  All_Protected = co.pre100,
+  Private_Protected = co.priv.pre100,
+  Public_Protected = co.pub.pre100,
+  Distance_100 = ln.ctydist100,
+  Distance_30 = ln.ctydist30
+)
+
+na_vals <- log_data[is.na(log_data$Median_Income),]
+no_vals <- as.data.frame(na_vals)
+x <- no_vals %>% filter(year == "2015") #none
+x1 <- no_vals %>% filter(year == "1990") #none
+dim(x1)
+
+na_vals2 <- log_data[is.na(log_data$Unemployment_rate),]
+no_vals2 <- as.data.frame(na_vals2)
+x2 <- no_vals2 %>% filter(year == "2015") #none
+dim(x2)
+x3 <- no_vals2 %>% filter(year == "1990") #unemployment is missing from log data
+dim(x3)
+
+#Unemployment in original data set
+unemployment_test <- as.data.frame(data[is.na(data$unemp.r.pre),])
+head(unemployment_test)
+x4 <- unemployment_test %>% filter(year == "1990")
+dim(x4)
+#values missing from 1990, cannot use
+
+interpolated_data <- log_data %>% mutate(`Median_Income` = na.approx(`Median_Income`))
+
+interpolated_data$gis.join <- as.factor(interpolated_data$gis.join)
+interpolated_data$year <- as.factor(interpolated_data$year)
+
+log_data_selected <- interpolated_data %>% dplyr::select(year:Unemployment_rate, Median_Income:Distance_30, 
+                                         All_Protected:Private_Protected)
+log_1990 <- log_data_selected %>% dplyr::filter(year==1990)
+log_2015 <- log_data_selected %>% dplyr::filter(year==2015)
+log_1995 <- log_data_selected %>% dplyr::filter(year==1995)
+
+#missing values in selected data
+sapply(log_1990, function(x) sum(is.na(x)))
+sapply(log_1995, function(x) sum(is.na(x)))
+sapply(log_2015, function(x) sum(is.na(x)))
+sapply(log_data_selected, function(x) sum(is.na(x)))
+#missing values in unemployment rate, ag+employment, arts and population
+
+names(log_data_selected)
+log_data_clean <- log_data_selected %>% dplyr::select(year, gis.join, Median_Income, Distance_100:Private_Protected)
+sapply(log_data_clean, function(x) sum(is.na(x)))
+#no NA's
+dim(log_data_clean)
+
+#split into test and train data  
+train = sample(1:nrow(log_data_clean), nrow(log_data_clean)/2) #split in half
+data.train=log_data_clean[train,]
+data.test=log_data_clean[-train,]
+dim(data.test)
+dim(data.train) #4500 in each
+  
+#simple linear of median and percent protected
+simple_regression <- lm(Median_Income ~ All_Protected, data = data.train)
+summary(simple_regression)
+#sig p values, shows there is a relationship
+
+#multiple linear regression of 10 potentials
+multi_regression <- lm(Median_Income ~ . - year -gis.join, data = data.train)
+summary(multi_regression)
+#distance 30 is not sig, but interesting All_Protected shows a negative coef
+
+#best subset
+regfit.full=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=5)
+reg.summary=summary(regfit.full)
+names(reg.summary)
+reg.summary$rsq
+which.max(reg.summary$adjr2)
+par(mfrow=c(2,2))
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",type='l')
+points(5,reg.summary$adjr2[11], col="red",cex=2,pch=20)
+which.min(reg.summary$cp)
+points(4,reg.summary$cp[10],col="red",cex=2,pch=20)
+which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(4,reg.summary$bic[4],col="red",cex=2,pch=20)
+plot(regfit.full,scale="r2")
+plot(regfit.full,scale="adjr2")
+plot(regfit.full,scale="Cp")
+plot(regfit.full,scale="bic")
+coef(regfit.full,5)
+coef(regfit.full,4)
+
+#forward selection
+regfit.fwd=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=5,method="forward")
+summary(regfit.fwd)
+#distance 100 always included, then private and then public protected
+
+#backward selection
+regfit.bwd=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=5,method="backward")
+summary(regfit.bwd)
+#similar to forward
+
+```
+
+We will now rerun the above analysis by excluding 1990 all together and create new train and test data sets:
+
+```{r}
+
+#rerun as of 1995 and on - Lauren
+dim(log_data)
+#remove 1990
+log_data_trim1 <- log_data %>% mutate(`Median_Income` = na.approx(`Median_Income`))
+log_data_trim <- log_data_trim1 %>% dplyr::filter(year!=1990)
+sapply(log_data_trim, function(x) sum(is.na(x)))
+
+#remove values that are empty still leaves a good amount of data
+log_data_trim_selected <- log_data_trim %>% dplyr::select(-ln.r.units.pre, -Ag_Employment, -Arts_Employment, -Pop)
+dim(log_data_trim_selected)
+
+#split into test and train data  
+train = sample(1:nrow(log_data_trim_selected), nrow(log_data_trim_selected)/2) #split in half
+data.train=log_data_trim_selected[train,]
+data.test=log_data_trim_selected[-train,]
+dim(data.test)
+dim(data.train) #3750 in each
+
+```
+
+Now we create a temporary table that removes non numeric columns so we can briefly look at possible variable relationships using correlations. They are all somewhat linear to median income but l5.co.bwf.pre100 and co.bwf.pre100 have very low correlations. We also see some multicollinearity between a ln.emp.n.pre and ln.labf.n.pre as well as a few others.
+
+```{r}
+data.train_all_numeric<-data.train[,c(-1,-2)] #remove year and gis.join
+cor(data.train_all_numeric)
+```
+
+Now we rerun our regression models as well as diagnostics to analyze the fits.
+
+We use the Durbin Watson test to see if there is any autocorrelation with the errors since we have data that could be time dependent, but the p values seem to be large for all models so we fail to reject and cannot conclude autocorrelation and most likely do not need to add time components.
+
+We use VIF values to investigate multicollinearity that we recognized in the correlation plot. We see that the first multiregression model fit has lots of large VIF values (above 10) for several variables. We then see as we remove variables with insignificant p values, the VIF values improve and our models have less mulicollinearity (multi_regression3 having the least).
+
+Lastly, looking at the diagnostic plots, we can roughly assume linearity for all the models by looking at the residual vs. fitted chart and they are, for the most part, well distributed. We can also roughly assume constant variance by looking at the scale location chart because those are well distributed for the most part. The errors for all models also all look roughly normally distributed with some tailing off at the ends.
+
+
+```{r}
+simple_regression <- lm(Median_Income ~ All_Protected, data = data.train)
+summary(simple_regression)
+durbinWatsonTest(simple_regression)
+plot(simple_regression) 
+
+```
+
+
+```{r}
+multi_regression <- lm(Median_Income ~ . - year -gis.join, data = data.train)
+summary(multi_regression)
+```
+
+```{r}
+durbinWatsonTest(multi_regression)
+vif(multi_regression)
+```
+
+
+```{r}
+plot(multi_regression)
+```
+
+
+```{r}
+#only use sig p values
+multi_regression1 <- lm(Median_Income ~ Unemployment_rate + Distance_100 + ln.pop.cen90 + l5.co.pre100 + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train)
+summary(multi_regression1)
+```
+
+```{r}
+durbinWatsonTest(multi_regression1)
+vif(multi_regression1)
+```
+
+```{r}
+plot(multi_regression1) 
+```
+
+
+```{r}
+multi_regression2 <- lm(Median_Income ~ Unemployment_rate + Distance_100 + l5.co.pre100 + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train)
+summary(multi_regression2)
+```
+
+```{r}
+durbinWatsonTest(multi_regression2)
+vif(multi_regression2)
+```
+
+```{r}
+plot(multi_regression2)
+```
+
+
+
+
+
+```{r}
+multi_regression3 <- lm(Median_Income ~ Unemployment_rate + Distance_100 + l5.co.pub.pre100 + l5.co.priv.pre100, data = data.train)
+summary(multi_regression3)
+#all protected not included
+```
+
+```{r}
+durbinWatsonTest(multi_regression3)
+vif(multi_regression3)
+```
+
+```{r}
+plot(multi_regression3)
+```
+
+Below are the Stepwise Selection methods that Lauren's code should further explain:
+
+```{r, results='hide'}
+
+#best subset
+regfit.full=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=19)
+reg.summary=summary(regfit.full)
+names(reg.summary)
+reg.summary$rsq
+which.max(reg.summary$adjr2)
+par(mfrow=c(2,2))
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",type='l')
+points(10,reg.summary$adjr2[10], col="red",cex=2,pch=20)
+which.min(reg.summary$cp)
+points(10,reg.summary$cp[10],col="red",cex=2,pch=20)
+which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(9,reg.summary$bic[9],col="red",cex=2,pch=20)
+plot(regfit.full,scale="r2")
+plot(regfit.full,scale="adjr2")
+plot(regfit.full,scale="Cp")
+plot(regfit.full,scale="bic")
+coef(regfit.full,10)
+coef(regfit.full,9)
+
+#forward selection
+regfit.fwd=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=19,method="forward")
+summary(regfit.fwd)
+#distance 100 always included, then private and then public protected
+
+#backward selection
+regfit.bwd=regsubsets(Median_Income ~ . - year -gis.join,data=data.train,nvmax=5,method="backward")
+summary(regfit.bwd)
+#similar to forward
+
+#important variables and meaning
+#l5.co.pre100 = 5 year lag of log percent protected, all types
+#l5.co.pub.pre100 = 5 year lag of log percent protected, public
+#l5.co.priv.pre100 = 5 year lag of log percent protected, private
+
+```
+
+We will now also fit two more regression models as well as its diagnostics:
+
+The first model has a large p value for the Durbin Watson test so we cannot assume autocorrelation.
+Also, looking at the diagnostic plots, we can roughly assume linearity, constant variance, and normally distributed errors due to the spreads:
+
+```{r}
+#try linear of 5 yr lag
+simple_regression1 <- lm(Median_Income ~ l5.co.pre100, data = data.train)
+summary(simple_regression1)
+```
+
+```{r}
+durbinWatsonTest(simple_regression1) 
+```
+
+```{r}
+plot(simple_regression1) 
+```
+
+The second model has a large p value for the Durbin Watson test so we cannot assume autocorrelation.
+Also, looking at the diagnostic plots, we can roughly assume linearity, constant variance, and normally distributed errors due to the spreads mentioned earlier. The VIF values are very low (under 5 or 10) so it does not look like multicollinearity:
+
+
+```{r}
+simple_regression2 <- lm(Median_Income ~ l5.co.pub.pre100 + l5.co.priv.pre100 , data = data.train)
+summary(simple_regression2)
+```
+
+```{r}
+durbinWatsonTest(simple_regression2) 
+vif(simple_regression2)
+```
+
+```{r}
+plot(simple_regression2)
+```
+
+
+We will now try regularization methods, Ridge and Lasso, which can assist with multicollinearity:
+
+Ridge Regression:
+
+```{r }
+
+x=model.matrix(Median_Income~.-year-gis.join,log_data_trim_selected)
+y=log_data_trim_selected$Median_Income
+y_test=y[-train]
+y_train=y[train]
+x_train = x[train,]
+x_test = x[-train,]
+#cross validation to find optimal lambda hyperparameter
+set.seed(1)
+cv.out = cv.glmnet(x_train, y_train, alpha = 0)
+bestlam = cv.out$lambda.min  # Select lamda that minimizes training MSE
+plot(cv.out)
+```
+
+Fit the ridge model after prep:
+
+```{r}
+
+ridge.mod = glmnet(x_train,y_train,alpha=0) 
+summary(ridge.mod)
+plot(ridge.mod)
+ridge.mod
+```
+
+Test Error and coefficients:
+
+Here we try Ridge Regression to see the effect of each variable. We see that Distance_100, Unemployment_rate, and ln.pop.cen90 all have pretty negative relationships with median income. Some others that stand out as slight positive relationships with median income are Private_Protected, l5.co.priv.pre100, and l5.nn5.co.pre100. This is all generally consistent with some of our other models we fit earlier. We also calculated the test MSE and will compare it against the Lasso Test MSE.
+
+```{r}
+ridge_pred = predict(ridge.mod, s = bestlam, newx = x_test) # Use best lambda to predict test data
+mean((ridge_pred - y_test)^2) # Calculate test MSE
+
+predict(ridge.mod,type="coefficients",s=bestlam)[1:20,]
+
+```
+
+Lasso:
+
+We just need to do cross validation again to find the new best lambda. Instead of picking the optimal lambda, we see the plot offers another option that might eliminate more variables so we choose that lambda for a simpler, more effective model using lambda.1se:
+
+```{r}
+#cross validation to find optimal lambda hyperparameter
+set.seed(1)
+cv.out_lasso = cv.glmnet(x_train, y_train, alpha = 1) 
+bestlam_lasso = cv.out_lasso$which.min
+plot(cv.out_lasso)
+bestlam_lasso = cv.out_lasso$lambda.1se
+```
+
+Fit Lasso Model:
+
+```{r}
+lasso.mod = glmnet(x_train,y_train,alpha=1)
+summary(lasso.mod)
+plot(lasso.mod)
+```
+Test Error and Coefficients:
+
+Lasso gives us more insight about variable importance since it performs variable selection by forcing coefficients to 0 unlike Ridge. We see that Lasso gives us a slightly lower Test MSE than Ridge. We see the relationships are somewhat consistent with the Ridge model, but it eliminates ln.labf.n.pre, Distance_30, All_Protected, co.bwf.pre100, nn5.co.pre100,and l5.nn10.co.pre100. It leaves us with a simpler model where ln.pop.cen90, ln.emp.n.pre, and Unemployment_rate have the largest effect.
+
+```{r}
+#test error
+lasso_pred = predict(lasso.mod, s = bestlam_lasso, newx = x_test) # Use best lambda to predict test data
+mean((lasso_pred - y_test)^2) # Calculate test MSE
+predict(lasso.mod,type="coefficients",s=bestlam_lasso)[1:20,]
+```
+
+
